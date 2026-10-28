@@ -1,0 +1,20 @@
+# ---- runtime / generated ----
+/tools/
+/dumps/
+/cef/
+/logs/
+/meta/
+/__pycache__/
+
+# ---- big game dumps / installers ----
+CERBERUS-GAMES_dump*.exe
+RF_Online_4gb_dump.exe
+CERBERUS-GAMES-INSTALL*.exe
+*.part
+*.crdownload
+
+# ---- files that contain the (local) proxy ----
+/profiles.json
+/spoof_*.cfg
+/rfspoof64.cfg
+/check_proxy.ps1
