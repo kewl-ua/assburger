@@ -9,6 +9,7 @@ The legacy per-instance cfg written by app.py (C:\SHARE\hwid\spoof_<id>.cfg) sta
 truth while app.py is running, because it carries the current relay port. The guard never invents a
 new relay port; it uses that file, then the profile copy, then a direct-proxy fallback.
 """
+import hashlib
 import os
 import re
 import stat
@@ -74,6 +75,13 @@ def spoof_dll():
         except OSError:
             pass
     return best or os.path.join(HERE, "rfspoof.dll")
+
+
+def guard_mutex_name():
+    r"""A portable copy must not share the singleton with C:\SHARE\hwid."""
+    if os.path.isfile(os.path.join(HERE, "portable.flag")):
+        return "Local\\RFGuardSingleton_" + hashlib.md5(HERE.lower().encode()).hexdigest()[:8]
+    return "Local\\RFGuardSingleton"
 
 
 def _marker_paths(profile):

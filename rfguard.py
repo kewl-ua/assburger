@@ -37,7 +37,7 @@ ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
 LOGDIR = os.path.join(HERE, "logs")
 LOGPATH = os.path.join(LOGDIR, "rfguard.log")
 STOPFILE = os.path.join(LOGDIR, "rfguard.stop")
-SINGLETON = "Local\\RFGuardSingleton"
+SINGLETON = rfprofiles.guard_mutex_name()
 RFBOT = (os.path.join(HERE, "bot")
          if os.path.isfile(os.path.join(HERE, "portable.flag")) and os.path.isdir(os.path.join(HERE, "bot", "profiles"))
          else r"C:\SHARE\rfbot2")

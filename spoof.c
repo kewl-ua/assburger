@@ -175,6 +175,17 @@ static void append_cfg_suffix(char *path, size_t cap, const char *suffix)
   if (n + strlen(suffix) + 1 < cap) strcat(path, suffix);
 }
 
+/* directory part of a path, with a trailing backslash; empty if there is none */
+static void dir_of(const char *path, char *out, size_t cap)
+{
+  char *s;
+  out[0] = 0;
+  if (!path || !path[0]) return;
+  strncpy(out, path, cap - 1); out[cap - 1] = 0;
+  s = strrchr(out, '\\');
+  if (s) s[1] = 0; else out[0] = 0;
+}
+
 /* cfg path next to a DLL: foo.dll -> foo.cfg (the old LoadLibrary contract) */
 static void cfg_from_dll(const char *dll, char *out, size_t cap)
 {
@@ -283,6 +294,22 @@ static void LoadCfg(void)
     strncpy(cand, g_reservedPath, MAX_PATH - 1); cand[MAX_PATH - 1] = 0;
     { char *s = strrchr(cand, '\\'); if (s) { s[1] = 0; append_cfg_suffix(cand, MAX_PATH, "rfspoof.cfg"); got |= load_cfg_file(cand); } }
   }
+  if (!got && g_reservedPath[0]) {
+    char dir[MAX_PATH];
+    dir_of(g_reservedPath, dir, MAX_PATH);
+    if (dir[0]) {
+      wsprintfA(cand, "%sspoof_%s.cfg", dir, g_cfgId);
+      got |= load_cfg_file(cand);
+    }
+  }
+  if (!got && g_reservedPath[0]) {
+    char dir[MAX_PATH];
+    dir_of(g_reservedPath, dir, MAX_PATH);
+    if (dir[0]) {
+      wsprintfA(cand, "%srfspoof.cfg", dir);
+      got |= load_cfg_file(cand);
+    }
+  }
   if (!got) {
     wsprintfA(cand, "C:\\SHARE\\hwid\\spoof_%s.cfg", g_cfgId);
     got |= load_cfg_file(cand);
@@ -294,8 +321,10 @@ static void LoadCfg(void)
   /* a log path is mandatory for diagnostics; derive one if the cfg did not set it */
   if (!g_logPath[0]) {
     if (g_cfgPath[0]) {
-      strncpy(g_logPath, g_cfgPath, MAX_PATH - 1); g_logPath[MAX_PATH - 1] = 0;
-      { char *s = strrchr(g_logPath, '\\'); if (s) s[1] = 0; else g_logPath[0] = 0; }
+      dir_of(g_cfgPath, g_logPath, MAX_PATH);
+      append_cfg_suffix(g_logPath, MAX_PATH, "spoof.log");
+    } else if (g_reservedPath[0]) {
+      dir_of(g_reservedPath, g_logPath, MAX_PATH);
       append_cfg_suffix(g_logPath, MAX_PATH, "spoof.log");
     } else {
       wsprintfA(g_logPath, "C:\\SHARE\\hwid\\logs\\spoof_%s.log", g_cfgId);
@@ -2111,8 +2140,14 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 #ifdef NETONLY
     InitializeCriticalSection(&g_ai_lock);
 #endif
-    if (!g_logPath[0])
-      wsprintfA(g_logPath, "C:\\SHARE\\hwid\\logs\\rfspoof_%lu.log", (unsigned long)GetCurrentProcessId());
+    if (!g_logPath[0]) {
+      char dir[MAX_PATH];
+      dir_of(g_reservedPath, dir, MAX_PATH);
+      if (dir[0])
+        wsprintfA(g_logPath, "%srfspoof_%lu.log", dir, (unsigned long)GetCurrentProcessId());
+      else
+        wsprintfA(g_logPath, "C:\\SHARE\\hwid\\logs\\rfspoof_%lu.log", (unsigned long)GetCurrentProcessId());
+    }
     state_open();
     if (g_alreadyPresent) {
       /* a second copy in the same process must not hook twice (the first copy owns the status). */

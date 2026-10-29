@@ -1828,7 +1828,7 @@ def run_gui():
 
 # =========================================================================== entry point
 def guard_running():
-    h = kernel32.OpenMutexW(0x00100000, False, "Local\\RFGuardSingleton")
+    h = kernel32.OpenMutexW(0x00100000, False, rfprofiles.guard_mutex_name())
     if not h:
         return False
     kernel32.CloseHandle(h)
