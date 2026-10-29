@@ -38,7 +38,9 @@ LOGDIR = os.path.join(HERE, "logs")
 LOGPATH = os.path.join(LOGDIR, "rfguard.log")
 STOPFILE = os.path.join(LOGDIR, "rfguard.stop")
 SINGLETON = "Local\\RFGuardSingleton"
-RFBOT = r"C:\SHARE\rfbot2"
+RFBOT = (os.path.join(HERE, "bot")
+         if os.path.isfile(os.path.join(HERE, "portable.flag")) and os.path.isdir(os.path.join(HERE, "bot", "profiles"))
+         else r"C:\SHARE\rfbot2")
 
 kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
 kernel32.CreateMutexW.restype = wintypes.HANDLE

@@ -16,7 +16,10 @@ import uuid
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROFILES_PATH = os.path.join(HERE, "profiles.json")
 PROFILE_ROOT = os.path.join(HERE, "profiles")
-RFBOT_ROOT = r"C:\SHARE\rfbot2"
+if os.path.isfile(os.path.join(HERE, "portable.flag")) and os.path.isdir(os.path.join(HERE, "bot", "profiles")):
+    RFBOT_ROOT = os.path.join(HERE, "bot")
+else:
+    RFBOT_ROOT = r"C:\SHARE\rfbot2"
 RFBOT_PROFILES = os.path.join(RFBOT_ROOT, "profiles")
 LOGDIR = os.path.join(HERE, "logs")
 

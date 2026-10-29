@@ -1024,9 +1024,10 @@ def hwid_game_profile(pid):
     if not exe:
         return None
     try:
-        path = os.path.join(os.path.dirname(HERE), "hwid", "profiles.json")
-        if not os.path.isfile(path):
-            path = r"C:\SHARE\hwid\profiles.json"
+        candidates = [os.path.join(os.path.dirname(HERE), "profiles.json"),
+                      os.path.join(os.path.dirname(HERE), "hwid", "profiles.json"),
+                      r"C:\SHARE\hwid\profiles.json"]
+        path = next((p for p in candidates if os.path.isfile(p)), candidates[-1])
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
         d = os.path.normcase(os.path.dirname(exe))
