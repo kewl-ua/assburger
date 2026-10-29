@@ -7,6 +7,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
+& (Join-Path $PSScriptRoot "sync_bot.ps1")
 git add -A
 $staged = git diff --cached --name-only
 if (-not $staged) {
