@@ -18,3 +18,36 @@ CERBERUS-GAMES-INSTALL*.exe
 /spoof_*.cfg
 /rfspoof64.cfg
 /check_proxy.ps1
+
+# ---- generated profile/runtime state ----
+/profiles/
+/state/
+/game_map.off
+/bot_map.off
+/rfspoof*.cfg
+/spoof_*.cfg
+/_dbg.log
+/_dns_probe.cfg
+/tests_dns_out*.txt
+
+# ---- re_hackshield artifacts (keep reports/sources, drop logs/binaries/backups) ----
+/re_hackshield/logs/
+/re_hackshield/pcap/
+/re_hackshield/poc/*.exe
+/re_hackshield/poc/*.dll
+/re_hackshield/poc/*.bin
+/re_hackshield/poc/*.bak*
+/tests/*.exe
+/tests/*.bin
+
+# ---- bot runtime state ----
+/bot/profiles/*/BotCore.log
+/bot/profiles/*/mm_debug.log
+/bot/profiles/*/.mapped.json
+/bot/profiles/*/.target
+/bot/**/__pycache__/
+/rfspoof.new.dll
+/rfspoof.next.dll
+/rfspoof.build.dll
+/rfspoof.net.next.dll
+/rfspoof.net.new.dll

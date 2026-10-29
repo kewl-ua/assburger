@@ -5,10 +5,22 @@ gui.py - control panel for running several isolated CERBERUS launcher instances.
 Each profile = one launcher window with its own fake hardware, own SOCKS5 proxy and own CEF
 user-data-dir. Buttons: start/stop per profile and start/stop all.
 
-Requires: launcher.py, config.py, hwgen.py, rfspoof.dll (build via build.ps1).
+Architecture (why it's split this way):
+  * Model/view separation. All profile data and validation live in profiles_model (no tkinter),
+    so the editor can never silently lose an edit on a profile switch: the view commits the
+    current profile through model.commit() BEFORE loading the next one, and a bad numeric value
+    aborts the switch with a highlight instead of being coerced to 0 behind your back.
+  * Non-blocking mainloop. Button handlers never call launcher.* directly. They push a command
+    onto a queue; a single background worker thread owns every process/injection call and never
+    touches Tk. The worker reports back through a second queue, drained on the Tk thread by an
+    after() pump. This keeps the UI responsive during CreateProcess/inject/child-watch and keeps
+    all widget access on the main thread (tkinter is not thread-safe).
+
+Requires: launcher.py, config.py, profiles_model.py, hwgen.py, rfspoof.dll (build via build.ps1).
 Run as admin (injection needs it). Double-click start.cmd.
 """
 import os
+import queue
 import sys
 import threading
 import time
@@ -20,27 +32,10 @@ sys.path.insert(0, HERE)
 
 import config
 import hwgen
-import launcher
+import profiles_model as pm
 
-HW_FIELDS = [
-    ("serial", "Volume serial (C:)"),
-    ("cname", "Computer name"),
-    ("macaddr", "MAC address"),
-    ("guid", "MachineGuid"),
-    ("uuid", "System UUID (SMBIOS)"),
-    ("biosvendor", "BIOS vendor"),
-    ("biosver", "BIOS version"),
-    ("biosserial", "BIOS serial"),
-    ("boardmfr", "Board manufacturer"),
-    ("boardprod", "Board product"),
-    ("boardserial", "Board serial"),
-    ("sysprod", "System product"),
-    ("monid", "Monitor HardwareID"),
-    ("cpu", "CPU name"),
-    ("diskserial", "Disk serial"),
-    ("rammb", "RAM (MB)"),
-    ("build", "Windows build"),
-]
+# launcher is imported lazily inside the worker only: it pulls in Windows-only ctypes.WinDLL,
+# so importing it at module load would make gui.py unimportable off Windows (and in tests).
 
 
 def is_admin():
@@ -52,26 +47,56 @@ def is_admin():
 
 
 class App(tk.Tk):
+    POLL_MS = 1500
+    DRAIN_MS = 100
+
     def __init__(self):
         super().__init__()
         self.title("Cerberus Multi-Launcher")
         self.geometry("920x640")
-        self.cfg = config.load()
-        self.current = None          # selected profile id
-        self.procs = {}              # id -> (pid, handle)
-        self.threads = {}            # id -> hThread (while suspended)
-        self.vars = {}
+
+        # --- model ---
+        try:
+            self.model = pm.AppModel.load()
+        except config.ConfigError as e:
+            messagebox.showerror(
+                "profiles.json error",
+                "%s\n\nStarting with an empty list. Your existing file was left untouched." % e)
+            self.model = pm.AppModel(game_exe=config.DEFAULT_GAME, profiles=[])
+
+        self.current_id = None       # profile id currently loaded in the editor
+        self.running = {}            # id -> pid, mirror of worker state (read-only on this thread)
+        self.vars = {}               # key -> StringVar/BooleanVar
+        self.entries = {}            # key -> ttk.Entry (for error highlighting)
+        self._errored = set()        # keys currently highlighted
+
+        # --- worker plumbing ---
+        self.cmd_q = queue.Queue()   # main thread -> worker (process/inject commands)
+        self.evt_q = queue.Queue()   # worker -> main thread (log lines, running-state)
+        self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+
         self._build()
         self._refresh_list()
-        self._select(self.cfg["profiles"][0]["id"] if self.cfg["profiles"] else None)
-        self.after(1500, self._poll)
+        if self.model.profiles:
+            self._select_id(self.model.profiles[0].id)
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._worker.start()
+        self.after(self.DRAIN_MS, self._drain_events)
+        self.after(self.POLL_MS, self._tick_poll)
 
     # ---------------------------------------------------------------- layout
     def _build(self):
+        style = ttk.Style(self)
+        try:
+            style.configure("Error.TEntry", fieldbackground="#ffd4d4")
+        except Exception:
+            pass
+
         top = ttk.Frame(self)
         top.pack(fill="x", padx=8, pady=6)
         ttk.Label(top, text="Game exe:").pack(side="left")
-        self.game_var = tk.StringVar(value=self.cfg.get("game_exe", ""))
+        self.game_var = tk.StringVar(value=self.model.game_exe)
         ttk.Entry(top, textvariable=self.game_var, width=70).pack(side="left", padx=6)
         ttk.Button(top, text="...", width=3, command=self._pick_game).pack(side="left")
         ttk.Button(top, text="Save", command=self._save_game).pack(side="left", padx=6)
@@ -109,16 +134,16 @@ class App(tk.Tk):
 
         hw = ttk.LabelFrame(right, text="Fake hardware  (Gen HW fills realistic values)")
         hw.pack(fill="both", expand=True, pady=4)
-        for i, (key, label) in enumerate(HW_FIELDS):
+        for i, (key, label) in enumerate(pm.HW_FIELDS):
             self._row(hw, i, label, key, None)
 
         act = ttk.Frame(right)
         act.pack(fill="x", pady=6)
-        ttk.Button(act, text="Start selected", command=lambda: self._start([self.current])).pack(side="left")
-        ttk.Button(act, text="Stop selected", command=lambda: self._stop([self.current])).pack(side="left", padx=4)
+        ttk.Button(act, text="Start selected", command=lambda: self._start([self.current_id])).pack(side="left")
+        ttk.Button(act, text="Stop selected", command=lambda: self._stop([self.current_id])).pack(side="left", padx=4)
         ttk.Button(act, text="START ALL", command=self._start_all).pack(side="left", padx=16)
         ttk.Button(act, text="STOP ALL", command=self._stop_all).pack(side="left")
-        self.apply_btn = ttk.Button(act, text="Apply changes", command=self._apply)
+        self.apply_btn = ttk.Button(act, text="Apply changes", command=self._apply_clicked)
         self.apply_btn.pack(side="right")
 
         # status/log
@@ -138,8 +163,83 @@ class App(tk.Tk):
             self.vars[key] = v
             e = ttk.Entry(parent, textvariable=v, width=58)
             e.grid(row=r, column=1, sticky="w", padx=4, pady=1)
+            self.entries[key] = e
+            # clear a red highlight as soon as the user edits that field
+            v.trace_add("write", lambda *_a, k=key: self._unmark_error(k))
             if hint:
                 ttk.Label(parent, text=hint, foreground="gray").grid(row=r, column=2, sticky="w")
+
+    # ---------------------------------------------------------------- editor <-> model
+    def _values_from_widgets(self):
+        v = {}
+        for k in ("label", "game_exe", "user", "password", "proxy"):
+            v[k] = self.vars[k].get()
+        v["inject_children"] = bool(self.vars["inject_children"].get())
+        for k, _ in pm.HW_FIELDS:
+            v[k] = self.vars[k].get()
+        return v
+
+    def _load_into_editor(self, pid):
+        p = self.model.find(pid)
+        if not p:
+            return
+        self.vars["label"].set(p.label)
+        self.vars["game_exe"].set(p.game_exe)
+        self.vars["user"].set(p.user)
+        self.vars["password"].set(p.password)
+        self.vars["proxy"].set(p.proxy)
+        self.vars["inject_children"].set(bool(p.inject_children))
+        for k, _ in pm.HW_FIELDS:
+            self.vars[k].set(str(p.hw.get(k, "")))
+        self._clear_error()
+
+    def _try_commit_current(self):
+        """Commit the editor into the current profile. Returns True on success; on a bad numeric
+        value, highlights the field, shows a message and returns False (nothing saved)."""
+        if self.current_id is None:
+            return True
+        try:
+            self.model.commit(self.current_id, self._values_from_widgets())
+            self._clear_error()
+            return True
+        except pm.ValidationError as e:
+            self._mark_error(e.field)
+            messagebox.showerror("Invalid value", e.message)
+            return False
+        except config.ConfigError as e:
+            messagebox.showerror("Save failed", str(e))
+            return False
+
+    # ---------------------------------------------------------------- selection
+    def _on_select(self, _e):
+        sel = self.listbox.curselection()
+        if not sel:
+            return
+        target = self.model.profiles[sel[0]].id
+        if target == self.current_id:
+            return
+        # commit the profile we're leaving before switching; revert the listbox if it won't commit
+        if not self._try_commit_current():
+            self._reselect_listbox(self.current_id)
+            return
+        self.current_id = target
+        self._load_into_editor(target)
+        self._refresh_list()
+
+    def _select_id(self, pid):
+        self.current_id = pid
+        self._load_into_editor(pid)
+        self._reselect_listbox(pid)
+
+    def _reselect_listbox(self, pid):
+        """Set the listbox selection to *pid* without firing <<ListboxSelect>> (programmatic
+        selection changes don't generate the virtual event)."""
+        self.listbox.selection_clear(0, "end")
+        for i, p in enumerate(self.model.profiles):
+            if p.id == pid:
+                self.listbox.selection_set(i)
+                self.listbox.see(i)
+                break
 
     # ---------------------------------------------------------------- helpers
     def _log(self, msg):
@@ -148,6 +248,31 @@ class App(tk.Tk):
         self.log.see("end")
         self.log.configure(state="disabled")
 
+    def _mark_error(self, key):
+        e = self.entries.get(key)
+        if e is not None:
+            e.configure(style="Error.TEntry")
+            self._errored.add(key)
+
+    def _unmark_error(self, key):
+        if key in self._errored:
+            e = self.entries.get(key)
+            if e is not None:
+                e.configure(style="TEntry")
+            self._errored.discard(key)
+
+    def _clear_error(self):
+        for key in list(self._errored):
+            self._unmark_error(key)
+
+    def _refresh_list(self):
+        self.listbox.delete(0, "end")
+        for p in self.model.profiles:
+            alive = " ●" if p.id in self.running else ""
+            self.listbox.insert("end", "%s  [%s]%s" % (p.label or p.id, p.id, alive))
+        if self.current_id is not None:
+            self._reselect_listbox(self.current_id)
+
     def _pick_game(self):
         from tkinter import filedialog
         p = filedialog.askopenfilename(filetypes=[("exe", "*.exe"), ("all", "*.*")])
@@ -155,178 +280,229 @@ class App(tk.Tk):
             self.game_var.set(p)
 
     def _save_game(self):
-        self.cfg["game_exe"] = self.game_var.get()
-        config.save(self.cfg)
+        self.model.game_exe = self.game_var.get()
+        try:
+            self.model.save()
+        except config.ConfigError as e:
+            messagebox.showerror("Save failed", str(e))
+            return
         self._log("game exe saved")
 
-    def _profile(self, pid):
-        for p in self.cfg["profiles"]:
-            if p["id"] == pid:
-                return p
-        return None
-
-    def _refresh_list(self):
-        self.listbox.delete(0, "end")
-        for p in self.cfg["profiles"]:
-            alive = " ●" if p["id"] in self.procs and launcher.alive(self.procs[p["id"]][0]) else ""
-            self.listbox.insert("end", "%s  [%s]%s" % (p.get("label", p["id"]), p["id"], alive))
-
-    def _select(self, pid):
-        self.current = pid
-        if pid is None:
-            return
-        p = self._profile(pid)
-        if not p:
-            return
-        self.vars["label"].set(p.get("label", ""))
-        self.vars["game_exe"].set(p.get("game_exe", ""))
-        self.vars["user"].set(p.get("user", ""))
-        self.vars["password"].set(p.get("password", ""))
-        self.vars["proxy"].set(p.get("proxy", ""))
-        self.vars["inject_children"].set(bool(p.get("inject_children")))
-        hw = p.get("hw") or {}
-        for key, _ in HW_FIELDS:
-            self.vars[key].set(str(hw.get(key, "")))
-
-    def _on_select(self, _e):
-        sel = self.listbox.curselection()
-        if not sel:
-            return
-        self._apply(silent=True)
-        pid = self.cfg["profiles"][sel[0]]["id"]
-        self._select(pid)
-
-    def _collect_into(self, p):
-        p["label"] = self.vars["label"].get()
-        p["game_exe"] = self.vars["game_exe"].get().strip()
-        p["user"] = self.vars["user"].get()
-        p["password"] = self.vars["password"].get()
-        p["proxy"] = self.vars["proxy"].get().strip()
-        p["inject_children"] = bool(self.vars["inject_children"].get())
-        hw = p.get("hw") or {}
-        for key, _ in HW_FIELDS:
-            val = self.vars[key].get().strip()
-            if key in ("build", "rammb"):
-                hw[key] = int(val) if val.isdigit() else 0
-            else:
-                hw[key] = val
-        p["hw"] = hw
-
-    def _apply(self, silent=False):
-        if self.current is None:
-            return
-        p = self._profile(self.current)
-        if p:
-            self._collect_into(p)
-            config.save(self.cfg)
-            if not silent:
-                self._log("saved profile %s" % self.current)
+    # ---------------------------------------------------------------- profile edit buttons
+    def _apply_clicked(self):
+        if self._try_commit_current():
+            self._log("saved profile %s" % self.current_id)
             self._refresh_list()
 
     def _add(self):
-        self._apply(silent=True)
-        pid = config.next_id(self.cfg)
-        self.cfg["profiles"].append({
-            "id": pid, "label": "Instance %s" % pid, "user": "", "password": "",
-            "proxy": "", "inject_children": False, "enabled": True, "hw": hwgen.generate(pid),
-        })
-        config.save(self.cfg)
+        if not self._try_commit_current():
+            return
+        p = self.model.add()
+        try:
+            self.model.save()
+        except config.ConfigError as e:
+            self.model.remove(p.id)
+            messagebox.showerror("Add failed", str(e))
+            return
         self._refresh_list()
-        self._select(pid)
-        self.listbox.selection_clear(0, "end")
-        self.listbox.selection_set(len(self.cfg["profiles"]) - 1)
-        self._log("added profile %s" % pid)
+        self._select_id(p.id)
+        self._log("added profile %s" % p.id)
 
     def _remove(self):
-        if self.current is None:
+        if self.current_id is None:
             return
-        if self.current in self.procs and launcher.alive(self.procs[self.current][0]):
+        pid = self.current_id
+        if pid in self.running:
             if not messagebox.askyesno("Remove", "Profile running. Stop and remove?"):
                 return
-            self._stop([self.current])
-        self.cfg["profiles"] = [p for p in self.cfg["profiles"] if p["id"] != self.current]
-        config.save(self.cfg)
-        self._log("removed profile %s" % self.current)
-        self.current = None
+            self._stop([pid])
+        self.model.remove(pid)
+        try:
+            self.model.save()
+        except config.ConfigError as e:
+            messagebox.showerror("Remove failed", str(e))
+            return
+        self._log("removed profile %s" % pid)
+        self.current_id = None
         self._refresh_list()
-        if self.cfg["profiles"]:
-            self._select(self.cfg["profiles"][0]["id"])
-            self.listbox.selection_set(0)
+        if self.model.profiles:
+            self._select_id(self.model.profiles[0].id)
 
     def _gen_hw(self):
-        if self.current is None:
+        if self.current_id is None:
             return
-        hw = hwgen.generate(self.current + os.urandom(2).hex())
-        for key, _ in HW_FIELDS:
-            self.vars[key].set(str(hw.get(key, "")))
-        # new identity -> drop the hidden HWID marker folder so the launcher creates a fresh UUID
-        mdir = os.path.join(launcher.METADIR, "profile_%s" % self.current)
-        import shutil
-        shutil.rmtree(mdir, ignore_errors=True)
-        self._apply(silent=True)
-        self._log("generated new realistic hardware + new HWID marker for profile %s" % self.current)
+        hw = hwgen.generate(self.current_id + os.urandom(2).hex())
+        for k, _ in pm.HW_FIELDS:
+            self.vars[k].set(str(hw.get(k, "")))
+        if not self._try_commit_current():
+            return
+        # new identity -> ask the worker to drop the hidden HWID marker so launcher makes a fresh one
+        self.cmd_q.put(("drop_marker", self.current_id))
+        self._log("generated new realistic hardware for profile %s (HWID marker reset requested)"
+                  % self.current_id)
 
-    # ---------------------------------------------------------------- start/stop
+    # ---------------------------------------------------------------- start/stop (non-blocking)
     def _start(self, ids):
-        self._apply(silent=True)
+        if not self._try_commit_current():
+            return
         ids = [i for i in ids if i]
+        if not ids:
+            return
         game = self.game_var.get()
+        snaps = {}
         for pid in ids:
-            p = self._profile(pid)
+            p = self.model.find(pid)
+            if p is not None:
+                snaps[pid] = p.to_dict()
+        self.cmd_q.put(("start", ids, game, snaps))
+
+    def _stop(self, ids):
+        ids = [i for i in ids if i]
+        if ids:
+            self.cmd_q.put(("stop", ids))
+
+    def _start_all(self):
+        self._start(self.model.ids())
+
+    def _stop_all(self):
+        self.cmd_q.put(("stop_all",))
+
+    def _tick_poll(self):
+        self.cmd_q.put(("poll",))
+        self.after(self.POLL_MS, self._tick_poll)
+
+    def _drain_events(self):
+        try:
+            while True:
+                kind, payload = self.evt_q.get_nowait()
+                if kind == "log":
+                    self._log(payload)
+                elif kind == "running":
+                    self.running = payload
+                    self._refresh_list()
+        except queue.Empty:
+            pass
+        self.after(self.DRAIN_MS, self._drain_events)
+
+    def _on_close(self):
+        try:
+            self.cmd_q.put(("quit",))
+        except Exception:
+            pass
+        self.destroy()
+
+    # ---------------------------------------------------------------- worker thread (owns launcher)
+    def _emit(self, kind, payload):
+        self.evt_q.put((kind, payload))
+
+    def _worker_loop(self):
+        """Single background consumer of cmd_q. Owns every launcher.* call and the live process
+        table; posts logs and running-state back through evt_q. Never touches Tk widgets."""
+        try:
+            import launcher
+        except Exception as e:                       # pragma: no cover - Windows-only import
+            self._emit("log", "FATAL: cannot import launcher: %s" % e)
+            return
+        procs = {}                                   # id -> (pid, hproc)
+        while True:
+            cmd = self.cmd_q.get()
+            op = cmd[0]
+            if op == "quit":
+                break
+            try:
+                if op == "start":
+                    self._w_start(launcher, procs, cmd[1], cmd[2], cmd[3])
+                elif op == "stop":
+                    self._w_stop(launcher, procs, cmd[1])
+                elif op == "stop_all":
+                    self._w_stop(launcher, procs, list(procs.keys()))
+                elif op == "poll":
+                    self._w_poll(launcher, procs)
+                elif op == "drop_marker":
+                    self._w_drop_marker(launcher, cmd[1])
+            except Exception as e:
+                self._emit("log", "worker error on %s: %s" % (op, e))
+
+    def _emit_running(self, launcher, procs):
+        run = {}
+        for pid, (pr, _h) in procs.items():
+            try:
+                if launcher.alive(pr):
+                    run[pid] = pr
+            except Exception:
+                pass
+        self._emit("running", run)
+
+    def _w_start(self, launcher, procs, ids, game, snaps):
+        ids = [i for i in ids if i]
+        hts = {}
+        # 1) create every instance suspended
+        for pid in ids:
+            p = snaps.get(pid)
+            if p is None:
+                continue
             exe = p.get("game_exe") or game
             if not exe or not os.path.isfile(exe):
-                self._log("profile %s: no valid game exe" % pid)
+                self._emit("log", "profile %s: no valid game exe" % pid)
                 continue
-            if pid in self.procs and launcher.alive(self.procs[pid][0]):
-                self._log("profile %s already running" % pid)
+            if pid in procs and launcher.alive(procs[pid][0]):
+                self._emit("log", "profile %s already running" % pid)
                 continue
             try:
                 pr, h, ht = launcher.start(p, game, suspended=True)
-                self.procs[pid] = (pr, h)
-                self.threads[pid] = ht
-                self._log("started %s (pid %d, suspended)" % (pid, pr))
+                procs[pid] = (pr, h)
+                hts[pid] = ht
+                self._emit("log", "started %s (pid %d, suspended)" % (pid, pr))
             except Exception as e:
-                self._log("start %s failed: %s" % (pid, e))
-        # inject each while suspended + resume + watch children, in a worker thread
-        threading.Thread(target=self._inject_worker, args=(ids,), daemon=True).start()
-        self._refresh_list()
-
-    def _inject_worker(self, ids):
-        game = self.game_var.get()
-        main_dlls = {}
-        # resume all first (LDR builds on first run), tiny settle, then inject
-        for pid in ids:
-            ht = self.threads.pop(pid, None)
+                self._emit("log", "start %s failed: %s" % (pid, e))
+        # 2) resume all first (LDR builds on first run), tiny settle, then inject
+        for pid in list(hts):
             try:
-                launcher.resume(ht)
+                launcher.resume(hts[pid])
             except Exception:
                 pass
         time.sleep(0.1)
+        # 3) inject each main process
+        main_dlls = {}
         for pid in ids:
-            if pid not in self.procs:
+            if pid not in procs:
                 continue
-            pr, hproc = self.procs[pid]
-            p = self._profile(pid)
+            pr, hproc = procs[pid]
+            p = snaps.get(pid, {})
+            if "_dll" not in p:
+                try:
+                    launcher.prepare(p)          # ensure p["_dll"] exists; preserves call contract
+                except Exception:
+                    pass
             try:
-                launcher.inject_instance(pr, p["_dll"], hproc)
-                main_dlls[pr] = (p["_dll"], bool(p.get("inject_children")))
-                self._log("injected main %s (pid %d)" % (pid, pr))
+                launcher.inject_instance(pr, p.get("_dll"), hproc)
+                main_dlls[pr] = (p.get("_dll"), bool(p.get("inject_children")))
+                self._emit("log", "injected main %s (pid %d)" % (pid, pr))
             except Exception as e:
-                self._log("inject %s failed: %s" % (pid, e))
-        # watch children, inject into their own instance (only for profiles that want it)
+                self._emit("log", "inject %s failed: %s" % (pid, e))
+        self._emit_running(launcher, procs)
+        # 4) watch children in a short-lived daemon so the worker stays responsive to stop/quit
+        threading.Thread(target=self._w_watch_children,
+                         args=(launcher, game, dict(main_dlls)), daemon=True).start()
+
+    def _w_watch_children(self, launcher, game, main_dlls):
         name = os.path.basename(game).lower()
         seen = set(main_dlls.keys())
         first_seen = {}
         end = time.time() + 15
         while time.time() < end:
             now = time.time()
-            for q in launcher.inj.find_pids_by_name(name):
+            try:
+                pids = launcher.inj.find_pids_by_name(name)
+            except Exception:
+                pids = []
+            for q in pids:
                 if q in seen:
                     continue
                 if q not in first_seen:
                     first_seen[q] = now
                     continue
-                if now - first_seen[q] < 1.5:      # let the child settle
+                if now - first_seen[q] < 1.5:       # let the child settle
                     continue
                 seen.add(q)
                 dll, want = launcher._dll_for_child(q, main_dlls)
@@ -334,41 +510,39 @@ class App(tk.Tk):
                     continue
                 try:
                     if launcher.inject_instance(q, dll):
-                        self._log("  child %d injected" % q)
+                        self._emit("log", "  child %d injected" % q)
                 except Exception:
                     pass
             time.sleep(0.05)
-        self._refresh_list()
 
-    def _stop(self, ids):
+    def _w_stop(self, launcher, procs, ids):
         for pid in ids:
-            if pid in self.procs:
-                pr, h = self.procs[pid]
+            if pid in procs:
+                pr, _h = procs[pid]
                 try:
                     if launcher.alive(pr):
                         launcher.kill_pid(pr)
-                    self._log("stopped %s (pid %d)" % (pid, pr))
+                    self._emit("log", "stopped %s (pid %d)" % (pid, pr))
                 except Exception as e:
-                    self._log("stop %s failed: %s" % (pid, e))
-                self.procs.pop(pid, None)
-        self._refresh_list()
+                    self._emit("log", "stop %s failed: %s" % (pid, e))
+                procs.pop(pid, None)
+        self._emit_running(launcher, procs)
 
-    def _start_all(self):
-        self._start([p["id"] for p in self.cfg["profiles"]])
-
-    def _stop_all(self):
-        self._stop(list(self.procs.keys()))
-
-    def _poll(self):
+    def _w_poll(self, launcher, procs):
         changed = False
-        for pid, (pr, h) in list(self.procs.items()):
+        for pid, (pr, _h) in list(procs.items()):
             if not launcher.alive(pr):
-                self._log("profile %s exited" % pid)
-                self.procs.pop(pid, None)
+                self._emit("log", "profile %s exited" % pid)
+                procs.pop(pid, None)
                 changed = True
         if changed:
-            self._refresh_list()
-        self.after(1500, self._poll)
+            self._emit_running(launcher, procs)
+
+    def _w_drop_marker(self, launcher, pid):
+        import shutil
+        mdir = os.path.join(launcher.METADIR, "profile_%s" % pid)
+        shutil.rmtree(mdir, ignore_errors=True)
+        self._emit("log", "HWID marker reset for profile %s" % pid)
 
 
 if __name__ == "__main__":

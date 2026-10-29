@@ -1,0 +1,233 @@
+{
+  "version": 28,
+  "_note": "Distances are game world units.",
+  "shared": {
+    "_note": "Must match BotCore.ini [Bot] SharedName. A snapshot that did not change for stale_seconds is treated as missing (game minimized, loading screen, UI hidden).",
+    "name": "Local\\RFBotState_bot1",
+    "stale_seconds": 2.0
+  },
+  "keys": {
+    "attack": "1"
+  },
+  "hotkeys": {
+    "anchor": "delete",
+    "toggle": "f11",
+    "debug": "pagedown",
+    "quit": "ctrl+end",
+    "record": "ctrl+pagedown"
+  },
+  "timing": {
+    "tick_seconds": 0.1,
+    "_attack_note": "Seconds between two presses of the attack key: random between min and max (window: Main).",
+    "attack_interval_min": 0.1,
+    "attack_interval_max": 0.25,
+    "summon_interval": 3.0,
+    "_select_note": "select_guard: minimum seconds between two target requests. target_confirm: longest wait for the server to confirm a selected monster as the target.",
+    "select_guard": 0.8,
+    "target_confirm": 1.5,
+    "target_stuck_seconds": 20.0,
+    "dead_target_clear": 0.8,
+    "clear_guard": 1.0
+  },
+  "targeting": {
+    "_note": "Monsters within search_radius of the anchor (of you when there is no anchor). sort: 'mixed' = monsters within near_radius of you first (nearest first), then the ones nearest to the anchor; 'avatar' = nearest to you first; 'anchor' = nearest to the anchor first. only_names / skip_names: parts of monster names (case-insensitive). Levels 0 = no limit. attack_any: ignore only_names and attack every monster (skip_names still wins).",
+    "search_radius": 500.0,
+    "sort": "mixed",
+    "near_radius": 150.0,
+    "min_hp": 0.0,
+    "skip_damaged": false,
+    "attack_any": true,
+    "only_names": [],
+    "skip_names": [],
+    "min_level": 0,
+    "max_level": 0,
+    "_priority_note": "Nearest monster to you first, but monsters that attacked your animus (then you) within priority_window seconds come before the others, whatever only_names / skip_names / levels / search_radius say (up to max(search_radius, leash) from you). switch_to_animus_attackers: drop the current target for a monster that attacks your animus (not more often than switch_cooldown seconds).",
+    "priority_window": 6.0,
+    "switch_to_animus_attackers": true,
+    "switch_cooldown": 3.0,
+    "_others_note": "prefer_untouched: a monster that is not yours (you have not attacked it, it does not attack you or your animus) and has lost HP or attacks another player is probably someone else's: it comes after the untouched ones (still attacked when there is nothing else).",
+    "prefer_untouched": true,
+    "_skip_note": "A monster the game could not select is ignored for skip_seconds, one the server did not confirm as the target (or that stayed out of range) for miss_seconds.",
+    "skip_seconds": 6.0,
+    "miss_seconds": 10.0
+  },
+  "anchor": {
+    "_note": "leash: walk back (through the game) when farther than this from the anchor, until closer than return_dist. step: distance of a nearer point to walk to when the game finds no path to the anchor itself. step_wait: seconds without moving before the next walk request. walk_timeout: longest wait for one walk request. max_steps: walk requests per return.",
+    "enabled": true,
+    "marker_pick_radius": 150.0,
+    "leash": 650.0,
+    "return_dist": 60.0,
+    "step": 200.0,
+    "step_wait": 1.0,
+    "walk_timeout": 30.0,
+    "max_steps": 20,
+    "retry_cooldown": 5.0,
+    "_idle_note": "idle_return_seconds: no target for this long (nothing to attack near you) and farther than return_dist from the anchor: walk back to it (through the game; the bot keeps looking for monsters on the way). 0 = off.",
+    "idle_return_seconds": 3.0
+  },
+  "combat": {
+    "_note": "Targets farther than max_attack_distance (world units from you) are not attacked (so the skill key does not make the character run to them). 0 = no limit.",
+    "max_attack_distance": 0.0,
+    "far_target_timeout": 2.0,
+    "_switch_note": "switch_distance: a target farther than this from you (world units) for switch_distance_seconds is left for another monster nearer to you (it is skipped for targeting.miss_seconds); without another monster the bot keeps it. 0 = off.",
+    "switch_distance": 0.0,
+    "switch_distance_seconds": 1.0,
+    "_actions_first_note": "actions_first: every tick the animus first (a heal / reset / summon in progress: no attacks), then due actions (buffs, potions: also 'out' ones during a fight, the attack key waits), then fighting. false: 'out' actions only without a target.",
+    "actions_first": true,
+    "_casting_note": "wait_while_casting: while your character casts (its action kind 3, from the module) the bot presses no skill and does not walk to loot or back to the anchor (that would break the cast; a skill pressed meanwhile lights the skill cursor).",
+    "wait_while_casting": true
+  },
+  "animus": {
+    "_note": "enabled: summon / heal your animus. absent_confirm_seconds: seconds without an animus out before the bot summons one.",
+    "enabled": true,
+    "absent_confirm_seconds": 3.0,
+    "_summon_note": "The module lists your animus with their HP (it regenerates while they rest). With no animus out, the bot summons the first one of 'order' (parts of names) that has at least summon_min_hp of its HP (the game needs 50%); empty order = the one with the most HP.",
+    "order": [],
+    "_never_note": "never: names of animus the bot never summons (switch them off in the window, Animus tab).",
+    "never": [],
+    "summon_min_hp": 0.5,
+    "_revive_note": "heal_skill / reset_skill = names of skills on your belt (any page, see the Belt tab). When an animus you would summon died (heal_recalled: also one that rests with too little HP), the bot uses heal_skill as soon as the game says it is ready, then reset_skill (reset_after_heal) and summons it. A summon without an animus out after summon_check_seconds counts as refused (summon wait): reset_skill is used then too.",
+    "heal_skill": "",
+    "heal_recalled": false,
+    "reset_skill": "",
+    "reset_after_heal": true,
+    "summon_check_seconds": 6.0,
+    "_presses_note": "skill_presses: presses of the heal / reset skill, skill_press_delay seconds apart (the first press lights the cursor, the second casts it on you). A press the game did not use is retried with single presses.",
+    "skill_presses": 2,
+    "skill_press_delay": 0.25
+  },
+  "loot": {
+    "_note": "Pick up ground items (drops) through the game (packet 7/2). pickup_range: the pickup request is sent only this close (world units; the game says 'too far' beyond its own range: lower it then, raise it when the character walks right onto every drop). Farther drops are walked to first: radius = drops the bot goes for at once (also during a fight with in_combat), walk_radius = drops it goes for when not fighting (walk on). only_names / skip_names: parts of item names (case-insensitive). in_combat: also pick up while you have a live target. delay: minimum seconds between two pickups. priority_no_mobs_radius (0 = off): when no monster is within this distance, loot becomes the top priority (walk to it even with a target and ignore the in_combat gate). only_mine: skip drops owned by another player (the server would reject them); free/party loot is still taken. first: loot before the next target: after a kill wait up to after_kill_wait seconds for the drop, and select no new target while a wanted drop is within reach (monsters attacking you or your animus are still fought), at most max_hold_seconds in a row. tries: pickup requests for one drop (the second one walks onto it first), then it is skipped for skip_seconds.",
+    "enabled": true,
+    "radius": 120.0,
+    "in_combat": false,
+    "delay": 0.4,
+    "walk": true,
+    "walk_radius": 400.0,
+    "priority_no_mobs_radius": 0.0,
+    "only_mine": true,
+    "only_names": [],
+    "skip_names": [],
+    "pickup_range": 25.0,
+    "first": true,
+    "after_kill_wait": 2.0,
+    "max_hold_seconds": 10.0,
+    "tries": 4,
+    "skip_seconds": 60.0
+  },
+  "rotation": {
+    "_note": "Combat rotation: while you have a live monster target the bot presses the belt slots in this order (most important first), the first one whose skill is ready, then waits interval_seconds before the next press. slots: {'page': 0 = the page the belt shows (or the first page that has something on that slot) or 1-5, 'slot': 1-10}; a slot of another page is used directly through the game. Rotation off, empty slots list or no slot ready = the plain attack key (keys.attack) every timing.attack_interval_min..max seconds. only_ready: skip skills whose cooldown is still running (needs the belt cooldowns from the module). Edit it in the window (Rotation tab).",
+    "enabled": true,
+    "interval_seconds": 1.0,
+    "only_ready": true,
+    "slots": []
+  },
+  "_actions_note": "Key presses on conditions, checked in this order. when: 'missing' = one of 'effects' is not on you, 'ending' = one of them is on you with less than 'seconds' left, 'missing_or_ending', 'hp_below' / 'animus_hp_below' = your / your animus HP below 'percent'. combat: 'out' = only without a target (one action at a time, then 'wait' seconds), 'any' = also in combat, 'in' = only in combat. 'presses' presses 'press_delay' apart, then not again for 'cooldown' seconds. Edit them in the window (Actions tab).",
+  "actions": [
+    {
+      "name": "Tempo",
+      "enabled": true,
+      "key": "3",
+      "page": 0,
+      "when": "missing",
+      "effects": [
+        "Tempo"
+      ],
+      "seconds": 10.0,
+      "percent": 50.0,
+      "combat": "out",
+      "presses": 2,
+      "press_delay": 0.2,
+      "cooldown": 8.0,
+      "wait": 1.5
+    },
+    {
+      "name": "Vista",
+      "enabled": true,
+      "key": "4",
+      "page": 0,
+      "when": "missing",
+      "effects": [
+        "Vista"
+      ],
+      "seconds": 10.0,
+      "percent": 50.0,
+      "combat": "out",
+      "presses": 2,
+      "press_delay": 0.2,
+      "cooldown": 8.0,
+      "wait": 1.5
+    },
+    {
+      "name": "Velocity",
+      "enabled": true,
+      "key": "5",
+      "page": 0,
+      "when": "missing",
+      "effects": [
+        "Velocity"
+      ],
+      "seconds": 10.0,
+      "percent": 50.0,
+      "combat": "out",
+      "presses": 2,
+      "press_delay": 0.2,
+      "cooldown": 8.0,
+      "wait": 1.5
+    },
+    {
+      "name": "Adept",
+      "enabled": true,
+      "key": "6",
+      "page": 0,
+      "when": "missing",
+      "effects": [
+        "Adept"
+      ],
+      "seconds": 10.0,
+      "percent": 50.0,
+      "combat": "out",
+      "presses": 2,
+      "press_delay": 0.2,
+      "cooldown": 8.0,
+      "wait": 1.5
+    },
+    {
+      "name": "Renew buffs",
+      "enabled": true,
+      "key": "2",
+      "page": 0,
+      "when": "ending",
+      "effects": [
+        "Tempo",
+        "Vista",
+        "Velocity",
+        "Adept"
+      ],
+      "seconds": 200.0,
+      "percent": 50.0,
+      "combat": "out",
+      "presses": 2,
+      "press_delay": 0.5,
+      "cooldown": 8.0,
+      "wait": 1.5
+    },
+    {
+      "name": "Potion",
+      "enabled": true,
+      "key": "7",
+      "page": 0,
+      "when": "missing_or_ending",
+      "effects": [
+        "Advanced Adrenalin Potion"
+      ],
+      "seconds": 10.0,
+      "percent": 50.0,
+      "combat": "any",
+      "presses": 1,
+      "press_delay": 0.2,
+      "cooldown": 10.0,
+      "wait": 0.0
+    }
+  ]
+}
