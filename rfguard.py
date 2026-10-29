@@ -284,6 +284,10 @@ class Guard(object):
             log("game_map.off: game pid=%d left without the spoofer" % pid)
             rec["spoof"] = "off"
             return True
+        try:
+            rfprofiles.ensure_marker(profile, create=False)
+        except Exception:
+            pass
         dll = rfprofiles.spoof_dll()
         cfg = (rfprofiles.game_cfg(profile) if rec.get("kind") == "game"
                else rfprofiles.pick_cfg(profile))

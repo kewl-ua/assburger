@@ -11,6 +11,8 @@ new relay port; it uses that file, then the profile copy, then a direct-proxy fa
 """
 import os
 import re
+import stat
+import time
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -74,27 +76,99 @@ def spoof_dll():
     return best or os.path.join(HERE, "rfspoof.dll")
 
 
-def ensure_marker(profile):
-    r"""Create meta\profile_<id>\vcredist_x86.exe once with a stable unique UUID."""
+def _marker_paths(profile):
     pid = str(profile.get("id"))
     mdir = os.path.join(HERE, "meta", "profile_%s" % pid)
     path = os.path.join(mdir, "vcredist_x86.exe")
+    return mdir, path, path + ".golden"
+
+
+def _read_marker(path):
+    try:
+        with open(path, "r", encoding="ascii", errors="replace") as f:
+            cur = f.read().strip()
+        if len(cur) == 36 and cur.count("-") == 4:
+            return cur
+    except OSError:
+        pass
+    return None
+
+
+def _set_ro(path, ro=True):
+    try:
+        os.chmod(path, stat.S_IREAD if ro else (stat.S_IWRITE | stat.S_IREAD))
+    except OSError:
+        pass
+
+
+def _write_marker(path, val):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _set_ro(path, False)
+    with open(path, "w", encoding="ascii", newline="\n") as f:
+        f.write(val)
+
+
+def ensure_marker(profile, create=False):
+    r"""Use the launcher-created marker: first run leaves it absent (the launcher creates it);
+    later runs restore the golden copy if missing/changed and keep both read-only."""
+    mdir, path, golden = _marker_paths(profile)
     try:
         os.makedirs(mdir, exist_ok=True)
-        if os.path.isfile(path):
-            with open(path, "r", encoding="ascii", errors="replace") as f:
-                cur = f.read().strip()
-            if len(cur) == 36 and cur.count("-") == 4:
-                return path
-        hw = profile.get("hw") or {}
-        seed = "cerberus-profile-%s-%s-%s" % (pid, hw.get("guid") or hw.get("serial") or "",
-                                               hw.get("cname") or "")
-        val = str(uuid.uuid5(uuid.NAMESPACE_DNS, seed))
-        with open(path, "w", encoding="ascii", newline="\n") as f:
-            f.write(val)
+        g = _read_marker(golden)
+        if g:
+            if _read_marker(path) != g:
+                _write_marker(path, g)
+            _set_ro(path, True)
+            _set_ro(golden, True)
+            return path
+        m = _read_marker(path)
+        if m:
+            _write_marker(golden, m)
+            _set_ro(golden, True)
+            _set_ro(path, True)
+            return path
+        if create:
+            hw = profile.get("hw") or {}
+            seed = "cerberus-profile-%s-%s-%s" % (str(profile.get("id")),
+                                                   hw.get("guid") or hw.get("serial") or "",
+                                                   hw.get("cname") or "")
+            _write_marker(path, str(uuid.uuid5(uuid.NAMESPACE_DNS, seed)))
+            _write_marker(golden, _read_marker(path) or "")
+            _set_ro(path, True)
+            _set_ro(golden, True)
         return path
     except OSError:
-        return None
+        return path
+
+
+def capture_marker(profile):
+    """After the launcher created the marker: save golden + make it read-only."""
+    mdir, path, golden = _marker_paths(profile)
+    m = _read_marker(path)
+    if not m:
+        return False
+    try:
+        g = _read_marker(golden)
+        if not g:
+            _write_marker(golden, m)
+            _set_ro(golden, True)
+        elif g != m:
+            _write_marker(path, g)
+            m = g
+        _set_ro(path, True)
+        _set_ro(golden, True)
+        return True
+    except OSError:
+        return False
+
+
+def capture_marker_when_ready(profile, timeout=25.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if capture_marker(profile):
+            return True
+        time.sleep(0.2)
+    return False
 
 
 def cfg_text(profile, relay_port=None):

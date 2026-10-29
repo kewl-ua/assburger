@@ -949,6 +949,13 @@ def start_profile(profile, game_exe, suspended=False):
         full = kernel32.OpenProcess(0x1F0FFF, False, pi.dwProcessId)
         if full:
             h = full
+    # First run: the launcher creates its own PC-ID marker; capture/copy it to .golden and set it
+    # read-only. Later runs restore that golden copy before the launcher starts (ensure_marker).
+    try:
+        threading.Thread(target=rfprofiles.capture_marker_when_ready,
+                         args=(profile,), daemon=True).start()
+    except Exception:
+        pass
     # The mapping itself happens after the CEF window is up + settled (_w_start), so the CEF init
     # never races a manual map. The network service uses --proxy-server from the first byte.
     return pi.dwProcessId, h, pi.hThread
